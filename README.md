@@ -14,10 +14,9 @@ feature][vcpkg-binarycaching].
 [vcpkg-binarycaching]: https://learn.microsoft.com/en-us/vcpkg/users/binarycaching
 
 > **Status: pre-1.0, work in progress.**
-> The action skeleton (inputs/outputs, README, license) is in place but the
-> shell logic in `action.yml` is a TODO placeholder. See
-> [`.claude/HANDOFF.md`](.claude/HANDOFF.md) for the implementation plan and
-> current status.
+> The composite action is implemented; end-to-end CI validation against a
+> real GitHub Packages feed is pending. See
+> [`.claude/HANDOFF.md`](.claude/HANDOFF.md) for the rollout plan.
 
 ## Why
 

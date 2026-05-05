@@ -5,11 +5,6 @@ branding:
   icon: 'package'
   color: 'blue'
 
-# IMPLEMENTATION STATUS: SKELETON ONLY.
-# The inputs/outputs and step layout below describe the intended v1 design.
-# The actual shell logic in `runs.steps` is a TODO placeholder; see
-# .claude/HANDOFF.md section 6.1 for the implementation plan.
-
 inputs:
   ports:
     description: >
@@ -60,18 +55,161 @@ outputs:
 runs:
   using: composite
   steps:
-    # TODO(handoff §4.1): replace this placeholder with the real step sequence:
-    #   1. Resolve defaults  (id: resolve)
-    #   2. Verify vcpkg installation
-    #   3. Fetch nuget.exe via `vcpkg fetch nuget`
-    #   4. Configure NuGet source (sources add + setapikey)
-    #   5. Export VCPKG_BINARY_SOURCES via $GITHUB_ENV
-    #   6. Run `vcpkg install` when `inputs.ports` is non-empty
-    - name: Action skeleton (not yet implemented)
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 1: Resolve defaults
+    # ─────────────────────────────────────────────────────────────────────
+    - name: Resolve defaults
       id: resolve
       shell: bash
+      env:
+        INPUT_FEED_URL: ${{ inputs.feed-url }}
+        INPUT_VCPKG_ROOT: ${{ inputs.vcpkg-root }}
+        OWNER: ${{ github.repository_owner }}
       run: |
-        echo "::error::setup-vcpkg-nuget-cache: action skeleton only — see HANDOFF.md §4.1"
-        echo "feed-url=" >> "$GITHUB_OUTPUT"
-        echo "vcpkg-root=" >> "$GITHUB_OUTPUT"
-        exit 1
+        set -euo pipefail
+
+        FEED_URL="$INPUT_FEED_URL"
+        if [ -z "$FEED_URL" ]; then
+          FEED_URL="https://nuget.pkg.github.com/${OWNER}/index.json"
+        fi
+        echo "feed-url=$FEED_URL" >> "$GITHUB_OUTPUT"
+
+        VCPKG_R="$INPUT_VCPKG_ROOT"
+        if [ -z "$VCPKG_R" ]; then
+          VCPKG_R="${VCPKG_INSTALLATION_ROOT:-${VCPKG_ROOT:-}}"
+        fi
+        if [ -z "$VCPKG_R" ]; then
+          # Forward-slash form is safe under Git Bash on windows-latest, where
+          # the default vcpkg install lives at C:\vcpkg.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            VCPKG_R="C:/vcpkg"
+          else
+            VCPKG_R="/usr/local/share/vcpkg"
+          fi
+        fi
+        echo "vcpkg-root=$VCPKG_R" >> "$GITHUB_OUTPUT"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 2: Verify vcpkg installation
+    # ─────────────────────────────────────────────────────────────────────
+    - name: Verify vcpkg installation
+      shell: bash
+      env:
+        VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
+      run: |
+        set -euo pipefail
+        if [ ! -x "$VCPKG_R/vcpkg" ] && [ ! -f "$VCPKG_R/vcpkg.exe" ]; then
+          echo "::error::vcpkg not found at $VCPKG_R. Bootstrap vcpkg before calling this action."
+          exit 1
+        fi
+        echo "VCPKG_ROOT=$VCPKG_R" >> "$GITHUB_ENV"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 3: Fetch nuget.exe via vcpkg
+    # ─────────────────────────────────────────────────────────────────────
+    # `vcpkg fetch nuget` downloads/locates a known-good nuget.exe and prints
+    # its absolute path on the last line of stdout. We capture that path; it
+    # works on Windows / Linux / macOS uniformly.
+    #
+    # On non-Windows, nuget.exe needs Mono. ubuntu-latest has mono pre-installed;
+    # macos-latest does NOT — call sites need `brew install mono` or this action
+    # will fail at the `nuget sources add` step.
+    - name: Fetch nuget.exe via vcpkg
+      shell: bash
+      env:
+        VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          VCPKG_BIN="$VCPKG_R/vcpkg.exe"
+        else
+          VCPKG_BIN="$VCPKG_R/vcpkg"
+        fi
+        # `vcpkg fetch nuget` may print progress lines or blank lines; the
+        # nuget.exe path is always the last non-empty line of stdout.
+        NUGET_EXE="$("$VCPKG_BIN" fetch nuget 2>/dev/null | awk 'NF{p=$0} END{print p}')"
+        if [ -z "$NUGET_EXE" ] || [ ! -f "$NUGET_EXE" ]; then
+          echo "::error::vcpkg fetch nuget did not produce a usable path"
+          exit 1
+        fi
+        echo "NUGET_EXE=$NUGET_EXE" >> "$GITHUB_ENV"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 4: Configure NuGet source
+    # ─────────────────────────────────────────────────────────────────────
+    # `-StorePasswordInClearText` is required on non-Windows runners (no
+    # Windows credential store) and harmless on Windows. The username field is
+    # opaque to GitHub Packages — any non-empty string works.
+    - name: Configure NuGet source
+      shell: bash
+      env:
+        FEED_URL: ${{ steps.resolve.outputs.feed-url }}
+        FEED_NAME: ${{ inputs.feed-name }}
+        TOKEN: ${{ inputs.token }}
+        OWNER: ${{ github.repository_owner }}
+      run: |
+        set -euo pipefail
+        # Defense in depth: ensure the token is masked even if a downstream
+        # tool unexpectedly echoes it.
+        echo "::add-mask::$TOKEN"
+
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          NUGET_RUN=("$NUGET_EXE")
+        else
+          NUGET_RUN=(mono "$NUGET_EXE")
+        fi
+        # Idempotent: drop any prior registration with the same name so
+        # repeated invocations within a job do not error out.
+        "${NUGET_RUN[@]}" sources remove -Name "$FEED_NAME" 2>/dev/null || true
+        "${NUGET_RUN[@]}" sources add \
+          -Name "$FEED_NAME" \
+          -Source "$FEED_URL" \
+          -Username "$OWNER" \
+          -Password "$TOKEN" \
+          -StorePasswordInClearText
+        "${NUGET_RUN[@]}" setapikey "$TOKEN" -Source "$FEED_URL"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 5: Export VCPKG_BINARY_SOURCES
+    # ─────────────────────────────────────────────────────────────────────
+    # `clear` resets vcpkg's default binary sources (which include the local
+    # files cache) and replaces them with our nuget feed only. To keep the
+    # local files cache as a fallback, drop `clear` and use
+    # `default,read;nuget,...,readwrite` instead.
+    - name: Export VCPKG_BINARY_SOURCES
+      shell: bash
+      env:
+        FEED_URL: ${{ steps.resolve.outputs.feed-url }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        echo "VCPKG_BINARY_SOURCES=clear;nuget,${FEED_URL},${MODE}" >> "$GITHUB_ENV"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 6: vcpkg install (only when ports is non-empty)
+    # ─────────────────────────────────────────────────────────────────────
+    - name: vcpkg install
+      if: inputs.ports != ''
+      shell: bash
+      env:
+        PORTS: ${{ inputs.ports }}
+        TRIPLET: ${{ inputs.triplet }}
+        VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
+      run: |
+        set -euo pipefail
+        if [ -z "$TRIPLET" ]; then
+          echo "::error::triplet input is required when ports is non-empty"
+          exit 1
+        fi
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          VCPKG_BIN="$VCPKG_R/vcpkg.exe"
+        else
+          VCPKG_BIN="$VCPKG_R/vcpkg"
+        fi
+        # Convert comma-separated input into an argv array, trimming whitespace.
+        IFS=',' read -ra PORT_ARR <<< "$PORTS"
+        TRIMMED=()
+        for p in "${PORT_ARR[@]}"; do
+          TRIMMED+=("$(echo "$p" | tr -d '[:space:]')")
+        done
+        "$VCPKG_BIN" install --triplet="$TRIPLET" "${TRIMMED[@]}"

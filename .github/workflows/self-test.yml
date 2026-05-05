@@ -13,9 +13,9 @@
 #     don't get packages:write on GITHUB_TOKEN; we run with mode: read here
 #     to avoid 401s)
 #
-# IMPLEMENTATION STATUS: SKELETON ONLY. The action it calls is currently a
-# placeholder; this workflow will fail until action.yml is implemented.
-# See .claude/HANDOFF.md §4.2 for the full self-test plan.
+# Until this workflow has been run on a real GitHub-hosted runner with a
+# live GitHub Packages feed, treat results as unverified. See
+# .claude/HANDOFF.md §6.2 for the full self-test plan.
 
 name: self-test
 

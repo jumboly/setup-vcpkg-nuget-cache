@@ -14,8 +14,8 @@ Action。vcpkg の [binary caching][vcpkg-binarycaching] の **publisher 側**
 [vcpkg-binarycaching]: https://learn.microsoft.com/en-us/vcpkg/users/binarycaching
 
 > **状態: 1.0 未満、開発中。**
-> action のスケルトン (inputs/outputs、README、ライセンス) は揃っていますが、
-> `action.yml` の shell ロジックは TODO の placeholder です。実装計画と現状は
+> composite action の実装は完了しています。実 GitHub Packages feed に対する
+> end-to-end CI 検証はこれから。ロードマップは
 > [`.claude/HANDOFF.md`](.claude/HANDOFF.md) を参照。
 
 ## なぜ
