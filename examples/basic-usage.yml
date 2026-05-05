@@ -1,0 +1,31 @@
+# Drop-in example for libspatialite-sys-style consumers.
+# This snippet replaces the actions/cache + vcpkg install steps that a
+# typical Windows MSVC vcpkg job already has.
+
+name: example
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VCPKGRS_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+
+      # Other setup as needed (Rust toolchain, MSVC, etc.)
+      # - uses: dtolnay/rust-toolchain@stable
+
+      - uses: jumboly/setup-vcpkg-nuget-cache@v1
+        with:
+          ports: libspatialite
+          triplet: ${{ env.VCPKGRS_TRIPLET }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # vcpkg-installed libraries are now available at
+      # $VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/.
+      # Continue with cargo / cmake / msbuild as usual.
+      # - run: cargo build --features bundled-vcpkg --verbose

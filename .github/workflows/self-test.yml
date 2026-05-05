@@ -1,0 +1,74 @@
+# Self-test workflow.
+#
+# Calls the action against `libspatialite` (a non-trivial port with several
+# transitive dependencies — proj, geos, sqlite3, libcurl, libxml2, ...) on
+# windows-latest. The first run cold-builds and populates the GitHub Packages
+# NuGet feed under this repo's owner; subsequent runs verify per-port cache
+# hits.
+#
+# Trigger model:
+#   - workflow_dispatch: ad-hoc smoke / cache refresh
+#   - push to main: regression check after action.yml changes
+#   - pull_request: build-only verification (no NuGet publish — fork PRs
+#     don't get packages:write on GITHUB_TOKEN; we run with mode: read here
+#     to avoid 401s)
+#
+# IMPLEMENTATION STATUS: SKELETON ONLY. The action it calls is currently a
+# placeholder; this workflow will fail until action.yml is implemented.
+# See .claude/HANDOFF.md §4.2 for the full self-test plan.
+
+name: self-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/self-test.yml'
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-publish:
+    if: github.event_name != 'pull_request'
+    name: windows publish (libspatialite, x64-windows-static-md)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run setup-vcpkg-nuget-cache (publisher mode)
+        uses: ./
+        with:
+          ports: libspatialite
+          triplet: x64-windows-static-md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-read-only:
+    if: github.event_name == 'pull_request'
+    name: windows read-only (libspatialite, x64-windows-static-md)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run setup-vcpkg-nuget-cache (consumer mode)
+        uses: ./
+        with:
+          mode: read
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify env was exported
+        shell: pwsh
+        run: |
+          if (-not $env:VCPKG_BINARY_SOURCES) {
+            Write-Error "VCPKG_BINARY_SOURCES was not exported"
+            exit 1
+          }
+          Write-Host "VCPKG_BINARY_SOURCES = $env:VCPKG_BINARY_SOURCES"

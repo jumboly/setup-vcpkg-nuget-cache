@@ -1,0 +1,77 @@
+name: 'Setup vcpkg NuGet Cache'
+description: 'Configure vcpkg to use a GitHub Packages NuGet feed as a binary cache, and (optionally) install ports.'
+author: 'jumboly'
+branding:
+  icon: 'package'
+  color: 'blue'
+
+# IMPLEMENTATION STATUS: SKELETON ONLY.
+# The inputs/outputs and step layout below describe the intended v1 design.
+# The actual shell logic in `runs.steps` is a TODO placeholder; see
+# .claude/HANDOFF.md section 6.1 for the implementation plan.
+
+inputs:
+  ports:
+    description: >
+      Comma-separated list of vcpkg ports to install (e.g. "libspatialite,boost-system").
+      Leave empty to perform NuGet env setup only (the caller will run `vcpkg install` themselves).
+    required: false
+    default: ''
+  triplet:
+    description: >
+      vcpkg triplet (e.g. "x64-windows-static-md", "x64-linux"). Required when `ports` is non-empty.
+    required: false
+    default: ''
+  feed-url:
+    description: >
+      NuGet feed URL. Default: GitHub Packages of the calling repository owner
+      (https://nuget.pkg.github.com/<owner>/index.json).
+    required: false
+    default: ''
+  feed-name:
+    description: 'Internal NuGet source key. Used by `nuget sources add`.'
+    required: false
+    default: 'github-packages'
+  token:
+    description: >
+      GitHub token with packages:write permission (for publish) or packages:read (for consume-only).
+      `${{ secrets.GITHUB_TOKEN }}` works when publishing within the same owner as the calling repo.
+      Cross-owner publish or read requires a Personal Access Token.
+    required: true
+  vcpkg-root:
+    description: >
+      Path to vcpkg installation. Default resolution: $VCPKG_INSTALLATION_ROOT, then $VCPKG_ROOT,
+      then C:\vcpkg on Windows / /usr/local/share/vcpkg on Linux/macOS.
+    required: false
+    default: ''
+  mode:
+    description: '`read` (consumer only) or `readwrite` (publisher).'
+    required: false
+    default: 'readwrite'
+
+outputs:
+  feed-url:
+    description: 'Resolved feed URL.'
+    value: ${{ steps.resolve.outputs.feed-url }}
+  vcpkg-root:
+    description: 'Resolved vcpkg root path.'
+    value: ${{ steps.resolve.outputs.vcpkg-root }}
+
+runs:
+  using: composite
+  steps:
+    # TODO(handoff §4.1): replace this placeholder with the real step sequence:
+    #   1. Resolve defaults  (id: resolve)
+    #   2. Verify vcpkg installation
+    #   3. Fetch nuget.exe via `vcpkg fetch nuget`
+    #   4. Configure NuGet source (sources add + setapikey)
+    #   5. Export VCPKG_BINARY_SOURCES via $GITHUB_ENV
+    #   6. Run `vcpkg install` when `inputs.ports` is non-empty
+    - name: Action skeleton (not yet implemented)
+      id: resolve
+      shell: bash
+      run: |
+        echo "::error::setup-vcpkg-nuget-cache: action skeleton only — see HANDOFF.md §4.1"
+        echo "feed-url=" >> "$GITHUB_OUTPUT"
+        echo "vcpkg-root=" >> "$GITHUB_OUTPUT"
+        exit 1
