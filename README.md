@@ -4,64 +4,46 @@
 
 [日本語版 README はこちら / Japanese README](README.ja.md)
 
-A composite GitHub Action that caches [vcpkg][vcpkg] ports as NuGet packages
-in [GitHub Packages][github-packages], and (optionally) runs `vcpkg install`
-for you. Designed for the **publisher side** of vcpkg's [binary caching
-feature][vcpkg-binarycaching].
+A GitHub Action that makes Windows + Visual Studio CI builds with
+[vcpkg][vcpkg] much faster, by caching built dependencies as NuGet
+packages in your account's [GitHub Packages][github-packages] feed.
+The first CI run is the usual cold build; every run after that downloads
+prebuilt binaries instead of recompiling.
 
 [vcpkg]: https://github.com/microsoft/vcpkg
 [github-packages]: https://github.com/features/packages
-[vcpkg-binarycaching]: https://learn.microsoft.com/en-us/vcpkg/users/binarycaching
 
 > **Status: pre-1.0, work in progress.**
-> The composite action is implemented; end-to-end CI validation against a
-> real GitHub Packages feed is pending. See
-> [`.claude/HANDOFF.md`](.claude/HANDOFF.md) for the rollout plan.
+> The action is implemented and tested end-to-end on `windows-latest`.
+> v1.0 tag and Marketplace publish are still pending.
 
-## Why
+## Who this is for
 
-Building vcpkg ports from source on every CI run is slow — `libspatialite`
-plus its transitive dependencies takes ~25 minutes on `windows-latest`.
-vcpkg's binary caching solves this by caching pre-built ports as NuGet
-packages, but the canonical pattern requires nontrivial workflow boilerplate
-(`nuget.exe` fetch, source registration, env wiring, `vcpkg install`). This
-action wraps all of it behind a single `uses:`.
+You're working on a C++ project (or a Rust / .NET project that depends on
+C++ libraries) that:
 
-Compared to the `actions/cache`-over-`vcpkg/archives` pattern that most
-existing tutorials describe:
+- builds on **Windows** with **Visual Studio / MSVC**, and
+- uses **vcpkg** to install third-party libraries (`boost`, `libcurl`,
+  `proj`, etc.), and
+- has GitHub Actions CI that currently rebuilds those libraries from
+  source on every push (15–40 minutes per run for non-trivial graphs).
 
-| Property                                  | `actions/cache` | This action (NuGet) |
-|-------------------------------------------|-----------------|---------------------|
-| Cache hit granularity                     | tarball-wide    | per port            |
-| Survives `vcpkg HEAD` updates             | ❌ all-miss     | ✅ unchanged ports hit |
-| Survives `cargo test` / job failure       | ❌ skipped save | ✅ port-by-port push |
-| Eviction policy                           | 7 days idle     | persistent          |
-| Cross-repository sharing (same owner)     | ❌              | ✅                  |
-| Initial setup cost                        | low             | low (this action)   |
+## What it does
 
-## Quick start (publisher: builds and uploads)
+vcpkg has a built-in feature called [binary caching][vcpkg-binarycaching]:
+once vcpkg has built a library for a given configuration, it can stash
+the compiled artefacts and reuse them next time. One supported backend is
+a NuGet feed — and GitHub Packages provides a free NuGet feed scoped to
+your GitHub account.
 
-```yaml
-jobs:
-  build:
-    runs-on: windows-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jumboly/setup-vcpkg-nuget-cache@v1
-        with:
-          ports: libspatialite
-          triplet: x64-windows-static-md
-          token: ${{ secrets.GITHUB_TOKEN }}
-      # ports are now installed locally AND uploaded to
-      # https://nuget.pkg.github.com/<your-account>/
-      - run: |
-          # Use the installed libraries from cmake / msbuild / cargo / ...
-```
+Wiring vcpkg to a GitHub Packages NuGet feed in CI normally takes ~30
+lines of YAML (`vcpkg fetch nuget` → `nuget sources add` → `setapikey` →
+env wiring → `vcpkg install`). **This action collapses all of that to a
+single `uses:` line.**
 
-## Quick start (consumer: download only)
+[vcpkg-binarycaching]: https://learn.microsoft.com/en-us/vcpkg/users/binarycaching
+
+## Quick start
 
 ```yaml
 jobs:
@@ -69,31 +51,80 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-      packages: read
+      packages: write          # required so the job can publish to GitHub Packages
     steps:
       - uses: actions/checkout@v4
+
       - uses: jumboly/setup-vcpkg-nuget-cache@v1
         with:
-          mode: read
-          feed-url: https://nuget.pkg.github.com/some-publisher-account/index.json
+          ports: libspatialite,boost-system     # vcpkg ports to install (comma-separated)
+          triplet: x64-windows-static-md        # see the Triplets section below
           token: ${{ secrets.GITHUB_TOKEN }}
-      - run: |
-          C:\vcpkg\vcpkg.exe install --triplet=x64-windows-static-md libspatialite
-          # vcpkg pulls binaries from the feed; on miss it builds locally
-          # but does not push (mode: read).
+
+      # Your dependencies are now installed under
+      # $VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/.
+      # Continue with cmake / msbuild / cargo / etc.
+      - name: Build
+        run: cmake --preset windows-msvc && cmake --build out
 ```
+
+What you'll see in the Actions log:
+
+- **First run** (cold cache): the action runs `vcpkg install`, which
+  builds your dependencies from source (~25 min for `libspatialite` and
+  its transitive deps), then uploads each built port to GitHub Packages.
+- **Subsequent runs** (warm cache): vcpkg downloads prebuilt `.nupkg`
+  files instead of building. Typically 1–2 minutes total.
+
+GitHub-hosted `windows-latest` already has vcpkg pre-installed at
+`C:\vcpkg`, so you don't need to bootstrap it.
+
+## Triplets
+
+A *triplet* tells vcpkg what to build for: architecture + OS + linkage +
+CRT. Most VS-built C++ projects pick one of:
+
+| Triplet                  | Meaning |
+|--------------------------|---------|
+| `x64-windows`            | 64-bit Windows, **DLLs** (each library is a separate `.dll`) |
+| `x64-windows-static`     | 64-bit Windows, **static `.lib`** + **static CRT** (`/MT`) |
+| `x64-windows-static-md`  | 64-bit Windows, **static `.lib`** + **dynamic CRT** (`/MD`) — typical for VS-built apps that need a single redistributable `.exe` |
+
+If unsure, start with `x64-windows-static-md`. For ARM64 builds, replace
+`x64` with `arm64`.
+
+## Verifying it works
+
+After the first successful run:
+
+1. Visit `https://github.com/<your-account>?tab=packages`. You should see
+   the ports you specified (and their transitive dependencies) listed as
+   NuGet packages.
+2. Re-run the workflow. The `setup-vcpkg-nuget-cache` step plus the
+   `vcpkg install` it triggers should finish in 1–2 minutes. The vcpkg
+   log lines will switch from `Building from source` to messages about
+   restoring from the NuGet feed.
+
+## Common errors
+
+| Symptom | Cause / fix |
+|---------|-------------|
+| `triplet input is required when ports is non-empty` | You set `ports:` but not `triplet:`. Add a triplet (see above). |
+| `401 Unauthorized` when the action tries to push | The job lacks `packages: write` permission. Add the `permissions:` block from the Quick start. |
+| All ports rebuilding on what should be a warm run | The GitHub-hosted runner's MSVC or Windows SDK was updated upstream. vcpkg's ABI hash changes → cache miss for everything. Happens roughly monthly; the new build re-populates the cache. |
+| Pull request from a fork: push fails | Expected. `GITHUB_TOKEN` from fork PRs cannot get `packages: write` for security reasons. Either gate publishing behind `if: github.event.pull_request.head.repo.full_name == github.repository`, or accept the cold build for fork PRs. |
 
 ## Inputs
 
 | Name         | Required | Default            | Description |
 |--------------|----------|--------------------|-------------|
-| `ports`      | no       | `""`               | Comma-separated vcpkg ports to install. Empty = setup env only. |
-| `triplet`    | no       | `""`               | vcpkg triplet. Required when `ports` is non-empty. |
-| `feed-url`   | no       | derived            | NuGet feed URL. Default: `https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json`. |
-| `feed-name`  | no       | `github-packages`  | Internal NuGet source key. |
-| `token`      | **yes**  | —                  | GitHub token with `packages:write` (or `:read` for `mode: read`). |
-| `vcpkg-root` | no       | derived            | Path to vcpkg. Default: `$VCPKG_INSTALLATION_ROOT`, then `$VCPKG_ROOT`, then `C:\vcpkg` / `/usr/local/share/vcpkg`. |
-| `mode`       | no       | `readwrite`        | `read` (consumer-only) or `readwrite` (publisher). |
+| `ports`      | no       | `""`               | Comma-separated vcpkg ports to install. Empty means setup the feed only (let your own step run `vcpkg install`). |
+| `triplet`    | no       | `""`               | vcpkg triplet (see Triplets section). Required when `ports` is non-empty. |
+| `feed-url`   | no       | derived            | NuGet feed URL. Default: `https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json` (i.e. your account). |
+| `feed-name`  | no       | `github-packages`  | Internal NuGet source key. Rarely changed. |
+| `token`      | **yes**  | —                  | GitHub token with `packages:write` (or `:read` for `mode: read`). `${{ secrets.GITHUB_TOKEN }}` works for same-account publishing. |
+| `vcpkg-root` | no       | derived            | Path to vcpkg. Default resolution: `$VCPKG_INSTALLATION_ROOT` → `$VCPKG_ROOT` → `C:/vcpkg`. |
+| `mode`       | no       | `readwrite`        | `read` (consumer-only — won't publish) or `readwrite` (default — publishes on cache miss). |
 
 ## Outputs
 
@@ -105,40 +136,57 @@ jobs:
 ## Authentication and permissions
 
 - The calling job needs `permissions: { contents: read, packages: write }`
-  for publisher mode, or `packages: read` for consumer-only mode.
-- For publishing within the same GitHub account/org as the calling repo:
-  `${{ secrets.GITHUB_TOKEN }}` works.
-- For cross-org publish (or read from another account's feed): a Personal
-  Access Token with `write:packages` (or `read:packages`) is required.
-- Pull requests from forks: `GITHUB_TOKEN` does not get `packages:write`,
-  so push is rejected. The cache miss falls back to building from source.
-  This matches `actions/cache` behaviour.
+  in publisher mode, or `packages: read` in consumer-only mode.
+- For publishing within the **same GitHub account/org** as the calling
+  repo: `${{ secrets.GITHUB_TOKEN }}` works out of the box.
+- For **cross-account** publish or read: a Personal Access Token (PAT)
+  with `write:packages` (or `read:packages`) is required.
+- **Pull requests from forks**: `GITHUB_TOKEN` does not get
+  `packages:write`, so push is rejected and the build falls back to
+  source. Same behaviour as `actions/cache`.
 
 ## Platform support
 
 Windows runners (`windows-latest`, `windows-2022`, etc.) only. vcpkg is
 pre-installed at `C:\vcpkg` on GitHub-hosted Windows runners. Linux and
-macOS are out of scope — `nuget.exe` requires Mono on those platforms and
-the canonical use case (`libspatialite-sys`, `shpx`) is Windows-only.
-The action exits with an error on non-Windows runners.
+macOS are out of scope: `nuget.exe` requires Mono there, and binary
+caching for Windows-targeted MSVC builds is the design centre. The
+action exits with an error on non-Windows runners.
 
-## Comparison to similar actions
+## Read-only consumer mode
 
-- [`lukka/run-vcpkg`][run-vcpkg] — Mature, widely used. Uses GitHub Actions
-  Cache as the binary cache backend. Does **not** publish to NuGet feeds.
-  Use this if you want a single-repo, ephemeral cache.
-- [`johnwason/vcpkg-action`][johnwason] — Similar scope to `run-vcpkg`,
-  also `actions/cache`-based. Does **not** publish to NuGet.
-- [`LegalizeAdulthood/vcpkg-nuget-cache`][legalize] — A consumer-side helper
-  that configures `VCPKG_BINARY_SOURCES` for an existing feed. Does **not**
-  publish; use it on the read side, this action on the write side.
+If repo A publishes a feed and repo B wants to reuse it without ever
+publishing, configure repo B like this:
 
-This action fills the gap where the publisher side needs to upload built
-ports to a long-lived NuGet feed.
+```yaml
+permissions:
+  contents: read
+  packages: read
+steps:
+  - uses: actions/checkout@v4
+  - uses: jumboly/setup-vcpkg-nuget-cache@v1
+    with:
+      mode: read
+      feed-url: https://nuget.pkg.github.com/<publisher-account>/index.json
+      token: ${{ secrets.GITHUB_TOKEN }}
+  - run: vcpkg install --triplet=x64-windows-static-md libspatialite
+    # Cache hit: download. Cache miss: build locally (NOT pushed).
+```
 
-[run-vcpkg]: https://github.com/marketplace/actions/run-vcpkg
-[johnwason]: https://github.com/johnwason/vcpkg-action
-[legalize]: https://github.com/LegalizeAdulthood/vcpkg-nuget-cache
+## Why this vs `actions/cache`?
+
+Most existing tutorials suggest caching `vcpkg/archives` with
+`actions/cache`. That works but has structural issues:
+
+| Property                                  | `actions/cache` | This action (NuGet) |
+|-------------------------------------------|-----------------|---------------------|
+| Cache hit granularity                     | tarball-wide    | per port            |
+| Survives `vcpkg HEAD` updates             | ❌ all-miss     | ✅ unchanged ports hit |
+| Survives test failures (post step)        | ❌ skipped save | ✅ port-by-port push |
+| Eviction policy                           | 7 days idle     | persistent          |
+| Cross-repository sharing (same owner)     | ❌              | ✅                  |
+
+The NuGet approach scales better as the dependency graph grows.
 
 ## License
 

@@ -70,8 +70,8 @@ runs:
         set -euo pipefail
 
         # This action targets windows-* runners. Linux/macOS are out of scope:
-        # the canonical caller (libspatialite-sys / shpx) is Windows-only, and
-        # the nuget.exe path on those platforms requires Mono + extra setup.
+        # nuget.exe needs Mono on those platforms and binary caching for
+        # Windows-targeted MSVC builds is the design centre.
         if [ "$RUNNER_OS" != "Windows" ]; then
           echo "::error::This action supports windows-* runners only (got RUNNER_OS=$RUNNER_OS)."
           exit 1

@@ -1,6 +1,6 @@
-# Drop-in example for libspatialite-sys-style consumers.
-# This snippet replaces the actions/cache + vcpkg install steps that a
-# typical Windows MSVC vcpkg job already has.
+# Drop-in example for a typical Windows MSVC + vcpkg job.
+# This snippet replaces the actions/cache + vcpkg install steps the
+# workflow would otherwise need.
 
 name: example
 on: [push, pull_request]
