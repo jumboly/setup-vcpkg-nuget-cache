@@ -39,6 +39,15 @@ inputs:
       then C:/vcpkg.
     required: false
     default: ''
+  vcpkg-commit:
+    description: >
+      git commit SHA of microsoft/vcpkg to pin the local checkout to. When set, the action runs
+      `git fetch && git checkout <sha>` in `vcpkg-root` and re-bootstraps vcpkg.exe so port
+      versions stay deterministic across runner image refreshes. Tag or branch names also work,
+      but commit SHAs are recommended for reproducibility. Leave empty to use whatever the
+      runner already has installed.
+    required: false
+    default: ''
   mode:
     description: '`read` (consumer only) or `readwrite` (publisher).'
     required: false
@@ -103,16 +112,53 @@ runs:
         echo "VCPKG_BIN=$VCPKG_R/vcpkg.exe" >> "$GITHUB_ENV"
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 2: Verify vcpkg installation
+    # Step 2: Verify vcpkg installation (and optionally pin to a commit)
     # ─────────────────────────────────────────────────────────────────────
+    # Without `vcpkg-commit`, this step only checks that vcpkg.exe exists at
+    # the resolved root — bootstrap is the caller's responsibility (the
+    # windows-latest runner image ships a working vcpkg at C:\vcpkg).
+    #
+    # With `vcpkg-commit`, this step pins the vcpkg ports tree to a specific
+    # SHA (or tag/branch) so port versions — and therefore abi-hashes and
+    # NuGet cache keys — stay deterministic across runner image refreshes.
+    # We re-run bootstrap-vcpkg.bat after checkout because the existing
+    # vcpkg.exe may not match the checked-out scripts.
     - name: Verify vcpkg installation
       shell: bash
       env:
         VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
+        VCPKG_COMMIT: ${{ inputs.vcpkg-commit }}
       run: |
         set -euo pipefail
+
+        if [ ! -d "$VCPKG_R" ]; then
+          echo "::error::vcpkg directory not found at $VCPKG_R. Bootstrap vcpkg before calling this action."
+          exit 1
+        fi
+
+        if [ -n "$VCPKG_COMMIT" ]; then
+          if [ ! -d "$VCPKG_R/.git" ]; then
+            echo "::error::vcpkg-commit was set but $VCPKG_R is not a git tree (no .git/ found). Cannot pin."
+            exit 1
+          fi
+          # Full fetch: pinned SHAs may be on branches we are not tracking
+          # locally yet (e.g. an older release commit not on master HEAD).
+          git -C "$VCPKG_R" fetch --tags origin
+          git -C "$VCPKG_R" checkout --detach "$VCPKG_COMMIT"
+          # bootstrap-vcpkg.bat is a Windows batch file; invoke via cmd.exe
+          # under Git Bash. -disableMetrics suppresses the telemetry prompt.
+          if ! cmd.exe //c "$(cygpath -w "$VCPKG_R/bootstrap-vcpkg.bat") -disableMetrics"; then
+            echo "::error::bootstrap-vcpkg.bat failed. Check vcpkg-commit value: $VCPKG_COMMIT"
+            exit 1
+          fi
+        fi
+
         if [ ! -f "$VCPKG_BIN" ]; then
-          echo "::error::vcpkg not found at $VCPKG_BIN. Bootstrap vcpkg before calling this action."
+          if [ -n "$VCPKG_COMMIT" ]; then
+            echo "::error::vcpkg.exe not found at $VCPKG_BIN after bootstrap. Inspect bootstrap log above."
+          else
+            echo "::error::vcpkg not found at $VCPKG_BIN. Bootstrap vcpkg before calling this action."
+          fi
           exit 1
         fi
         echo "VCPKG_ROOT=$VCPKG_R" >> "$GITHUB_ENV"

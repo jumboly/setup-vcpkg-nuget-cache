@@ -79,6 +79,80 @@ What you'll see in the Actions log:
 GitHub-hosted `windows-latest` already has vcpkg pre-installed at
 `C:\vcpkg`, so you don't need to bootstrap it.
 
+## Reproducibility: pinning vcpkg
+
+By default, this action uses whichever vcpkg checkout the runner image
+ships. The `windows-latest` image is refreshed roughly every two weeks,
+which moves the `C:\vcpkg` git tree to a newer commit. Because vcpkg's
+port versions live as `ports/<name>/vcpkg.json` files inside that tree,
+each refresh can change the version of any port — and any of its
+transitive dependencies — that you install. Once a dependency's version
+shifts, vcpkg's ABI hash changes, the existing NuGet entry no longer
+matches, and the cache misses (often for the entire dependency graph,
+since hashes propagate up through the tree).
+
+To opt in to deterministic builds, pass a vcpkg commit SHA via
+`vcpkg-commit`:
+
+```yaml
+- uses: jumboly/setup-vcpkg-nuget-cache@v1
+  with:
+    ports: libspatialite
+    triplet: x64-windows-static-md
+    token: ${{ secrets.GITHUB_TOKEN }}
+    vcpkg-commit: 84bab45d415d22042bd0b9081aea57f362da3f35   # microsoft/vcpkg 2025.12.12 release
+```
+
+When set, the action runs `git fetch && git checkout <sha>` in the vcpkg
+root and re-bootstraps `vcpkg.exe`, so the entire ports tree (and
+therefore every port version your build resolves to) is fixed. Cache
+hits then survive runner image refreshes — only an MSVC or Windows SDK
+upgrade can still invalidate them. Tags and branch names also work but
+SHAs are recommended for reproducibility.
+
+### How to pick a SHA
+
+Use a release tag commit from `microsoft/vcpkg` rather than an arbitrary
+`master` SHA — releases are tested as a coherent snapshot of all ports.
+Two ways to find one:
+
+- **From the browser**: open
+  [microsoft/vcpkg/releases](https://github.com/microsoft/vcpkg/releases),
+  pick the release you want (latest is usually fine), then copy the
+  commit SHA shown next to the tag.
+- **From the shell**:
+
+  ```bash
+  git ls-remote --tags https://github.com/microsoft/vcpkg.git \
+    | grep -E 'refs/tags/[0-9]{4}\.[0-9]{2}\.[0-9]{2}$' \
+    | tail -5
+  # 84bab45d415d22042bd0b9081aea57f362da3f35	refs/tags/2025.12.12
+  # ...                                       (most recent at the bottom)
+  ```
+
+  Copy the 40-character SHA from the leftmost column.
+
+### Upgrading
+
+Pinning is opt-in stagnation: until you change the SHA, your build keeps
+using the old vcpkg. To take a newer ports snapshot:
+
+1. Pick a new SHA (see above).
+2. Update `vcpkg-commit:` in your workflow and commit.
+3. The next CI run cold-builds against the new ports tree and publishes
+   fresh nupkgs to your feed.
+
+Plan to bump it every few months, or when you need a port version that
+landed upstream after your current pin.
+
+### Relationship to manifest mode
+
+`vcpkg-commit` is orthogonal to vcpkg's manifest mode (`vcpkg.json` +
+`builtin-baseline`); both can be used together if your project consumes
+vcpkg in manifest mode. In that case, point `vcpkg-commit` and
+`builtin-baseline` at the same SHA so the tool and the resolved port
+versions stay in sync.
+
 ## Triplets
 
 A *triplet* tells vcpkg what to build for: architecture + OS + linkage +
@@ -111,7 +185,7 @@ After the first successful run:
 |---------|-------------|
 | `triplet input is required when ports is non-empty` | You set `ports:` but not `triplet:`. Add a triplet (see above). |
 | `401 Unauthorized` when the action tries to push | The job lacks `packages: write` permission. Add the `permissions:` block from the Quick start. |
-| All ports rebuilding on what should be a warm run | The GitHub-hosted runner's MSVC or Windows SDK was updated upstream. vcpkg's ABI hash changes → cache miss for everything. Happens roughly monthly; the new build re-populates the cache. |
+| All ports rebuilding on what should be a warm run | Either the runner image's MSVC / Windows SDK was upgraded, or its bundled vcpkg checkout moved (port versions changed). The first you cannot avoid; the second is what `vcpkg-commit` is for — see [Reproducibility](#reproducibility-pinning-vcpkg). |
 | Pull request from a fork: push fails | Expected. `GITHUB_TOKEN` from fork PRs cannot get `packages: write` for security reasons. Either gate publishing behind `if: github.event.pull_request.head.repo.full_name == github.repository`, or accept the cold build for fork PRs. |
 
 ## Inputs
@@ -124,6 +198,7 @@ After the first successful run:
 | `feed-name`  | no       | `github-packages`  | Internal NuGet source key. Rarely changed. |
 | `token`      | **yes**  | —                  | GitHub token with `packages:write` (or `:read` for `mode: read`). `${{ secrets.GITHUB_TOKEN }}` works for same-account publishing. |
 | `vcpkg-root` | no       | derived            | Path to vcpkg. Default resolution: `$VCPKG_INSTALLATION_ROOT` → `$VCPKG_ROOT` → `C:/vcpkg`. |
+| `vcpkg-commit` | no     | `""`               | Commit SHA (tag/branch also accepted) of `microsoft/vcpkg` to pin the local checkout to. Empty = use the runner image's bundled commit. See [Reproducibility](#reproducibility-pinning-vcpkg). |
 | `mode`       | no       | `readwrite`        | `read` (consumer-only — won't publish) or `readwrite` (default — publishes on cache miss). |
 
 ## Outputs

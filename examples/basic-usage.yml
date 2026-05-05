@@ -24,6 +24,11 @@ jobs:
           ports: libspatialite
           triplet: ${{ env.VCPKGRS_TRIPLET }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          # For deterministic builds across runner image refreshes, pin the
+          # vcpkg ports tree to a microsoft/vcpkg release commit. Without it,
+          # the runner's bundled vcpkg checkout drifts every ~2 weeks. See
+          # README "Reproducibility" for details.
+          # vcpkg-commit: 84bab45d415d22042bd0b9081aea57f362da3f35   # 2025.12.12
 
       # vcpkg-installed libraries are now available at
       # $VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/.

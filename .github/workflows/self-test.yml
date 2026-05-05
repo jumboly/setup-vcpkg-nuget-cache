@@ -55,19 +55,23 @@ jobs:
 
   windows-read-only:
     if: github.event_name == 'pull_request'
-    name: windows read-only (libspatialite, x64-windows-static-md)
+    name: windows read-only (libspatialite, x64-windows-static-md, pinned vcpkg)
     runs-on: windows-latest
     permissions:
       contents: read
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - name: Run setup-vcpkg-nuget-cache (consumer mode)
+      # Exercise the vcpkg-commit pin path on the consumer job: low blast
+      # radius (no publish), and verifies that fetch+checkout+bootstrap
+      # works against the pre-installed C:\vcpkg.
+      - name: Run setup-vcpkg-nuget-cache (consumer mode, pinned)
         uses: ./
         with:
           mode: read
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify env was exported
+          vcpkg-commit: 84bab45d415d22042bd0b9081aea57f362da3f35   # microsoft/vcpkg 2025.12.12
+      - name: Verify env was exported and vcpkg pin took effect
         shell: pwsh
         run: |
           if (-not $env:VCPKG_BINARY_SOURCES) {
@@ -75,3 +79,11 @@ jobs:
             exit 1
           }
           Write-Host "VCPKG_BINARY_SOURCES = $env:VCPKG_BINARY_SOURCES"
+
+          $head = (git -C "$env:VCPKG_ROOT" rev-parse HEAD).Trim()
+          $expected = "84bab45d415d22042bd0b9081aea57f362da3f35"
+          if ($head -ne $expected) {
+            Write-Error "vcpkg HEAD = $head, expected $expected"
+            exit 1
+          }
+          Write-Host "vcpkg pinned to $head"
