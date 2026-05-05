@@ -1,6 +1,15 @@
-# Drop-in example for a typical Windows MSVC + vcpkg job.
-# This snippet replaces the actions/cache + vcpkg install steps the
-# workflow would otherwise need.
+# Drop-in example for a typical Windows MSVC + vcpkg manifest-mode job.
+#
+# Prerequisite: a `vcpkg.json` at the repo root (or wherever you run
+# `vcpkg install` from) declaring your dependencies and a
+# `builtin-baseline`. Example:
+#
+#   {
+#     "name": "my-app",
+#     "version-string": "0.1.0",
+#     "dependencies": ["libspatialite"],
+#     "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35"
+#   }
 
 name: example
 on: [push, pull_request]
@@ -13,22 +22,22 @@ jobs:
       packages: write
     env:
       VCPKGRS_TRIPLET: x64-windows-static-md
+      # Same SHA as vcpkg.json's builtin-baseline so the tool and the
+      # resolved port versions stay in sync.
+      VCPKG_PIN: 84bab45d415d22042bd0b9081aea57f362da3f35
     steps:
       - uses: actions/checkout@v4
 
       # Other setup as needed (Rust toolchain, MSVC, etc.)
       # - uses: dtolnay/rust-toolchain@stable
 
-      - uses: jumboly/setup-vcpkg-nuget-cache@v1
+      - uses: jumboly/setup-vcpkg-nuget-cache@v2
         with:
-          ports: libspatialite
-          triplet: ${{ env.VCPKGRS_TRIPLET }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          # For deterministic builds across runner image refreshes, pin the
-          # vcpkg ports tree to a microsoft/vcpkg release commit. Without it,
-          # the runner's bundled vcpkg checkout drifts every ~2 weeks. See
-          # README "Reproducibility" for details.
-          # vcpkg-commit: 84bab45d415d22042bd0b9081aea57f362da3f35   # 2025.12.12
+          vcpkg-commit: ${{ env.VCPKG_PIN }}
+
+      - name: Install vcpkg dependencies (manifest mode)
+        run: vcpkg install --triplet=${{ env.VCPKGRS_TRIPLET }}
 
       # vcpkg-installed libraries are now available at
       # $VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/.

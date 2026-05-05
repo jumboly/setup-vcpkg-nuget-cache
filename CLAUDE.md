@@ -9,13 +9,19 @@ caching to a GitHub Packages NuGet feed in one `uses:` line. There is no
 compiled source, no build step, no package manager — every change ships by
 editing `action.yml` (and keeping the docs in sync).
 
-Status: **pre-1.0**, single-maintainer Marketplace publish workflow. Default
-to the smallest change that solves the problem; resist adding inputs,
-abstractions, or fallbacks "just in case."
+The action is **manifest-mode-only**: the caller is expected to have a
+`vcpkg.json` and run `vcpkg install` themselves in a later step. The action
+sets up the NuGet feed plumbing and (optionally) pins the vcpkg checkout to
+a specific commit, then exits. Classic-mode support (`ports` / `triplet`
+inputs that ran `vcpkg install` from inside the action) was removed in v2.
 
-## Architecture: the 6-step env-var chain
+Status: single-maintainer Marketplace publish workflow. Default to the
+smallest change that solves the problem; resist adding inputs, abstractions,
+or fallbacks "just in case."
 
-`action.yml` is six sequential bash steps. They are not independent — each
+## Architecture: the 5-step env-var chain
+
+`action.yml` is five sequential bash steps. They are not independent — each
 later step depends on environment variables that earlier steps wrote to
 `GITHUB_ENV`. Reordering or splitting steps without preserving this chain
 will silently break the action.
@@ -23,7 +29,10 @@ will silently break the action.
 1. **Resolve defaults** — validates `mode`, validates `RUNNER_OS=Windows`,
    resolves `feed-url` / `vcpkg-root`, and exports `VCPKG_BIN` to
    `GITHUB_ENV`. All later steps read `$VCPKG_BIN`.
-2. **Verify vcpkg installation** — checks `$VCPKG_BIN` exists, exports
+2. **Verify vcpkg installation (and optionally pin to a commit)** —
+   confirms `$VCPKG_R` is a directory; if `vcpkg-commit` is set, runs
+   `git fetch --tags origin` + `git checkout --detach <sha>` +
+   `bootstrap-vcpkg.bat`; finally checks `$VCPKG_BIN` exists and exports
    `VCPKG_ROOT`.
 3. **Fetch nuget.exe via vcpkg** — runs `vcpkg fetch nuget`, captures the
    path from the **last non-empty stdout line** (the command may emit
@@ -36,8 +45,6 @@ will silently break the action.
 5. **Export `VCPKG_BINARY_SOURCES`** — `clear;nuget,<feed>,<mode>`. The
    leading `clear` deliberately drops vcpkg's default local-files cache so
    the NuGet feed is the only source.
-6. **vcpkg install** — only runs if `inputs.ports` is non-empty. Otherwise
-   the caller runs `vcpkg install` themselves later in the job.
 
 When editing, keep this chain intact and the env-var hand-off explicit.
 
@@ -52,13 +59,20 @@ explicit user request — it would expand scope significantly.
 
 There is no local test harness. The only end-to-end verification is
 `.github/workflows/self-test.yml` running on a real `windows-latest` runner
-against a live GitHub Packages feed:
+against a live GitHub Packages feed, using the manifest in
+`tests/manifest/vcpkg.json`:
 
-- `push` to `main` (paths: `action.yml`, the workflow itself) → publisher
-  mode against `libspatialite` + `x64-windows-static-md`.
+- `push` to `main` (paths: `action.yml`, `tests/manifest/vcpkg.json`, the
+  workflow itself) → publisher mode, runs `vcpkg install` against
+  `libspatialite` + `x64-windows-static-md`.
 - `pull_request` → consumer (`mode: read`) only, because fork PRs cannot
-  get `packages: write` on `GITHUB_TOKEN`.
+  get `packages: write` on `GITHUB_TOKEN`. Also runs `vcpkg install` in
+  read-only mode.
 - `workflow_dispatch` for ad-hoc smoke runs.
+
+`tests/manifest/vcpkg.json`'s `builtin-baseline` and the workflow's
+`vcpkg-commit` env (`VCPKG_PIN`) must stay in sync — bumping one without
+the other invites confusing version-resolution errors.
 
 Local YAML edits cannot be meaningfully validated beyond syntax. After
 non-trivial `action.yml` changes, expect the user to push and watch the
@@ -84,5 +98,10 @@ examples.
   are different and welcome.
 - Skipping pre-commit hooks or signing flags. Investigate failures
   instead.
-- Backwards-compat shims for inputs that have not yet shipped a v1 — the
-  action is pre-1.0, so renaming/removing inputs is still cheap.
+- Re-introducing classic-mode shortcuts (`ports` / `triplet` inputs, an
+  internal `vcpkg install` step). These were intentionally removed in v2;
+  the action's responsibility is NuGet feed wiring + optional vcpkg pin,
+  and the caller runs `vcpkg install` themselves in manifest mode.
+- Adding inputs that mirror what `vcpkg.json` already expresses
+  (`builtin-baseline`, dependencies, features). The manifest is the
+  source of truth for those.

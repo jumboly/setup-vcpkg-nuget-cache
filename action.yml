@@ -1,22 +1,11 @@
 name: 'Setup vcpkg NuGet Cache'
-description: 'Configure vcpkg to use a GitHub Packages NuGet feed as a binary cache, and (optionally) install ports.'
+description: 'Configure vcpkg to use a GitHub Packages NuGet feed as a binary cache. Manifest-mode only.'
 author: 'jumboly'
 branding:
   icon: 'package'
   color: 'blue'
 
 inputs:
-  ports:
-    description: >
-      Comma-separated list of vcpkg ports to install (e.g. "libspatialite,boost-system").
-      Leave empty to perform NuGet env setup only (the caller will run `vcpkg install` themselves).
-    required: false
-    default: ''
-  triplet:
-    description: >
-      vcpkg triplet (e.g. "x64-windows-static-md"). Required when `ports` is non-empty.
-    required: false
-    default: ''
   feed-url:
     description: >
       NuGet feed URL. Default: GitHub Packages of the calling repository owner
@@ -228,24 +217,3 @@ runs:
         set -euo pipefail
         echo "VCPKG_BINARY_SOURCES=clear;nuget,${FEED_URL},${MODE}" >> "$GITHUB_ENV"
 
-    # ─────────────────────────────────────────────────────────────────────
-    # Step 6: vcpkg install (only when ports is non-empty)
-    # ─────────────────────────────────────────────────────────────────────
-    - name: vcpkg install
-      if: inputs.ports != ''
-      shell: bash
-      env:
-        PORTS: ${{ inputs.ports }}
-        TRIPLET: ${{ inputs.triplet }}
-      run: |
-        set -euo pipefail
-        if [ -z "$TRIPLET" ]; then
-          echo "::error::triplet input is required when ports is non-empty"
-          exit 1
-        fi
-        IFS=',' read -ra PORT_ARR <<< "$PORTS"
-        TRIMMED=()
-        for p in "${PORT_ARR[@]}"; do
-          TRIMMED+=("${p//[[:space:]]/}")
-        done
-        "$VCPKG_BIN" install --triplet="$TRIPLET" "${TRIMMED[@]}"
