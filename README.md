@@ -116,11 +116,11 @@ jobs:
 
 ## Platform support
 
-| Runner            | Status                                                                  |
-|-------------------|-------------------------------------------------------------------------|
-| `windows-latest`  | Primary target. vcpkg is pre-installed at `C:\vcpkg`.                   |
-| `ubuntu-latest`   | Planned. Caller must bootstrap vcpkg first; Mono required for `nuget.exe`. |
-| `macos-latest`    | Planned. Caller must bootstrap vcpkg first; Mono required for `nuget.exe`. |
+Windows runners (`windows-latest`, `windows-2022`, etc.) only. vcpkg is
+pre-installed at `C:\vcpkg` on GitHub-hosted Windows runners. Linux and
+macOS are out of scope — `nuget.exe` requires Mono on those platforms and
+the canonical use case (`libspatialite-sys`, `shpx`) is Windows-only.
+The action exits with an error on non-Windows runners.
 
 ## Comparison to similar actions
 

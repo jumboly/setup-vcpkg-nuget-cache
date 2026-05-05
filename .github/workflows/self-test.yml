@@ -28,6 +28,9 @@ on:
       - '.github/workflows/self-test.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/self-test.yml'
 
 concurrency:
   group: self-test-${{ github.ref }}

@@ -112,11 +112,11 @@ jobs:
 
 ## 対応ランナー
 
-| Runner            | 状態                                                                          |
-|-------------------|-------------------------------------------------------------------------------|
-| `windows-latest`  | 主ターゲット。vcpkg は `C:\vcpkg` に pre-install 済み。                         |
-| `ubuntu-latest`   | 計画中。呼び出し側で vcpkg を bootstrap、`nuget.exe` 実行に Mono が必要。       |
-| `macos-latest`    | 計画中。同上。                                                                 |
+Windows runner (`windows-latest`、`windows-2022` など) のみ。GitHub-hosted
+Windows runner には vcpkg が `C:\vcpkg` に pre-install 済み。Linux / macOS は
+対象外 — それらでは `nuget.exe` が Mono に依存し、想定ユースケース
+(`libspatialite-sys` / `shpx`) も Windows-only のため。Windows 以外の runner
+で実行するとエラーで停止します。
 
 ## 類似 action との比較
 

@@ -14,7 +14,7 @@ inputs:
     default: ''
   triplet:
     description: >
-      vcpkg triplet (e.g. "x64-windows-static-md", "x64-linux"). Required when `ports` is non-empty.
+      vcpkg triplet (e.g. "x64-windows-static-md"). Required when `ports` is non-empty.
     required: false
     default: ''
   feed-url:
@@ -36,7 +36,7 @@ inputs:
   vcpkg-root:
     description: >
       Path to vcpkg installation. Default resolution: $VCPKG_INSTALLATION_ROOT, then $VCPKG_ROOT,
-      then C:\vcpkg on Windows / /usr/local/share/vcpkg on Linux/macOS.
+      then C:/vcpkg.
     required: false
     default: ''
   mode:
@@ -64,9 +64,25 @@ runs:
       env:
         INPUT_FEED_URL: ${{ inputs.feed-url }}
         INPUT_VCPKG_ROOT: ${{ inputs.vcpkg-root }}
+        INPUT_MODE: ${{ inputs.mode }}
         OWNER: ${{ github.repository_owner }}
       run: |
         set -euo pipefail
+
+        # This action targets windows-* runners. Linux/macOS are out of scope:
+        # the canonical caller (libspatialite-sys / shpx) is Windows-only, and
+        # the nuget.exe path on those platforms requires Mono + extra setup.
+        if [ "$RUNNER_OS" != "Windows" ]; then
+          echo "::error::This action supports windows-* runners only (got RUNNER_OS=$RUNNER_OS)."
+          exit 1
+        fi
+
+        # Reject typos in `mode` early — a bad value silently propagates into
+        # VCPKG_BINARY_SOURCES and disables binary caching with no error.
+        case "$INPUT_MODE" in
+          read|readwrite) ;;
+          *) echo "::error::invalid mode '$INPUT_MODE' (must be 'read' or 'readwrite')"; exit 1 ;;
+        esac
 
         FEED_URL="$INPUT_FEED_URL"
         if [ -z "$FEED_URL" ]; then
@@ -81,13 +97,10 @@ runs:
         if [ -z "$VCPKG_R" ]; then
           # Forward-slash form is safe under Git Bash on windows-latest, where
           # the default vcpkg install lives at C:\vcpkg.
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            VCPKG_R="C:/vcpkg"
-          else
-            VCPKG_R="/usr/local/share/vcpkg"
-          fi
+          VCPKG_R="C:/vcpkg"
         fi
         echo "vcpkg-root=$VCPKG_R" >> "$GITHUB_OUTPUT"
+        echo "VCPKG_BIN=$VCPKG_R/vcpkg.exe" >> "$GITHUB_ENV"
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 2: Verify vcpkg installation
@@ -98,8 +111,8 @@ runs:
         VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
       run: |
         set -euo pipefail
-        if [ ! -x "$VCPKG_R/vcpkg" ] && [ ! -f "$VCPKG_R/vcpkg.exe" ]; then
-          echo "::error::vcpkg not found at $VCPKG_R. Bootstrap vcpkg before calling this action."
+        if [ ! -f "$VCPKG_BIN" ]; then
+          echo "::error::vcpkg not found at $VCPKG_BIN. Bootstrap vcpkg before calling this action."
           exit 1
         fi
         echo "VCPKG_ROOT=$VCPKG_R" >> "$GITHUB_ENV"
@@ -108,23 +121,11 @@ runs:
     # Step 3: Fetch nuget.exe via vcpkg
     # ─────────────────────────────────────────────────────────────────────
     # `vcpkg fetch nuget` downloads/locates a known-good nuget.exe and prints
-    # its absolute path on the last line of stdout. We capture that path; it
-    # works on Windows / Linux / macOS uniformly.
-    #
-    # On non-Windows, nuget.exe needs Mono. ubuntu-latest has mono pre-installed;
-    # macos-latest does NOT — call sites need `brew install mono` or this action
-    # will fail at the `nuget sources add` step.
+    # its absolute path on the last line of stdout. We capture that path.
     - name: Fetch nuget.exe via vcpkg
       shell: bash
-      env:
-        VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
       run: |
         set -euo pipefail
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          VCPKG_BIN="$VCPKG_R/vcpkg.exe"
-        else
-          VCPKG_BIN="$VCPKG_R/vcpkg"
-        fi
         # `vcpkg fetch nuget` may print progress lines or blank lines; the
         # nuget.exe path is always the last non-empty line of stdout.
         NUGET_EXE="$("$VCPKG_BIN" fetch nuget 2>/dev/null | awk 'NF{p=$0} END{print p}')"
@@ -137,9 +138,10 @@ runs:
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: Configure NuGet source
     # ─────────────────────────────────────────────────────────────────────
-    # `-StorePasswordInClearText` is required on non-Windows runners (no
-    # Windows credential store) and harmless on Windows. The username field is
-    # opaque to GitHub Packages — any non-empty string works.
+    # `-StorePasswordInClearText` skips DPAPI encryption — required so that
+    # vcpkg (running as a separate process) can decrypt the credential on
+    # subsequent invocations. The `-Username` field is opaque to GitHub
+    # Packages — any non-empty string works; we pass the owner for trace.
     - name: Configure NuGet source
       shell: bash
       env:
@@ -153,21 +155,16 @@ runs:
         # tool unexpectedly echoes it.
         echo "::add-mask::$TOKEN"
 
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          NUGET_RUN=("$NUGET_EXE")
-        else
-          NUGET_RUN=(mono "$NUGET_EXE")
-        fi
         # Idempotent: drop any prior registration with the same name so
         # repeated invocations within a job do not error out.
-        "${NUGET_RUN[@]}" sources remove -Name "$FEED_NAME" 2>/dev/null || true
-        "${NUGET_RUN[@]}" sources add \
+        "$NUGET_EXE" sources remove -Name "$FEED_NAME" 2>/dev/null || true
+        "$NUGET_EXE" sources add \
           -Name "$FEED_NAME" \
           -Source "$FEED_URL" \
           -Username "$OWNER" \
           -Password "$TOKEN" \
           -StorePasswordInClearText
-        "${NUGET_RUN[@]}" setapikey "$TOKEN" -Source "$FEED_URL"
+        "$NUGET_EXE" setapikey "$TOKEN" -Source "$FEED_URL"
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5: Export VCPKG_BINARY_SOURCES
@@ -194,22 +191,15 @@ runs:
       env:
         PORTS: ${{ inputs.ports }}
         TRIPLET: ${{ inputs.triplet }}
-        VCPKG_R: ${{ steps.resolve.outputs.vcpkg-root }}
       run: |
         set -euo pipefail
         if [ -z "$TRIPLET" ]; then
           echo "::error::triplet input is required when ports is non-empty"
           exit 1
         fi
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          VCPKG_BIN="$VCPKG_R/vcpkg.exe"
-        else
-          VCPKG_BIN="$VCPKG_R/vcpkg"
-        fi
-        # Convert comma-separated input into an argv array, trimming whitespace.
         IFS=',' read -ra PORT_ARR <<< "$PORTS"
         TRIMMED=()
         for p in "${PORT_ARR[@]}"; do
-          TRIMMED+=("$(echo "$p" | tr -d '[:space:]')")
+          TRIMMED+=("${p//[[:space:]]/}")
         done
         "$VCPKG_BIN" install --triplet="$TRIPLET" "${TRIMMED[@]}"
