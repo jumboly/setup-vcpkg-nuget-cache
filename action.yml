@@ -30,7 +30,7 @@ inputs:
   token:
     description: >
       GitHub token with packages:write permission (for publish) or packages:read (for consume-only).
-      `${{ secrets.GITHUB_TOKEN }}` works when publishing within the same owner as the calling repo.
+      The job's secrets.GITHUB_TOKEN works when publishing within the same owner as the calling repo.
       Cross-owner publish or read requires a Personal Access Token.
     required: true
   vcpkg-root:
