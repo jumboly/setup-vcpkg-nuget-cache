@@ -1,8 +1,8 @@
-# Drop-in example for a typical Windows MSVC + vcpkg manifest-mode job.
+# Drop-in example for a typical Windows MSVC + vcpkg job.
 #
 # Prerequisite: a `vcpkg.json` at the repo root (or wherever you run
-# `vcpkg install` from) declaring your dependencies and a
-# `builtin-baseline`. Example:
+# the build from) declaring your dependencies and a builtin-baseline.
+# The action reads the SHA from that file automatically.
 #
 #   {
 #     "name": "my-app",
@@ -20,26 +20,22 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      VCPKGRS_TRIPLET: x64-windows-static-md
-      # Same SHA as vcpkg.json's builtin-baseline so the tool and the
-      # resolved port versions stay in sync.
-      VCPKG_PIN: 84bab45d415d22042bd0b9081aea57f362da3f35
     steps:
       - uses: actions/checkout@v4
 
       # Other setup as needed (Rust toolchain, MSVC, etc.)
       # - uses: dtolnay/rust-toolchain@stable
 
-      - uses: jumboly/setup-vcpkg-nuget-cache@v2
+      - uses: jumboly/setup-vcpkg-nuget-cache@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          vcpkg-commit: ${{ env.VCPKG_PIN }}
 
-      - name: Install vcpkg dependencies (manifest mode)
-        run: vcpkg install --triplet=${{ env.VCPKGRS_TRIPLET }}
+      # Option A: VS integration handles `vcpkg install` for you during
+      # msbuild. The action exported VCPKG_ROOT and VCPKG_BINARY_SOURCES,
+      # so msbuild auto-installs deps and uses the NuGet cache.
+      - name: Build
+        run: msbuild MyApp.sln /p:Configuration=Release /p:Platform=x64
 
-      # vcpkg-installed libraries are now available at
-      # $VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/.
-      # Continue with cargo / cmake / msbuild as usual.
-      # - run: cargo build --features bundled-vcpkg --verbose
+      # Option B: explicit vcpkg install (CMake, custom build, no VS).
+      # - run: vcpkg install --triplet=x64-windows-static-md
+      # - run: cmake --preset windows-msvc && cmake --build out

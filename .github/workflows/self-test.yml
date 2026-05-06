@@ -2,13 +2,17 @@
 #
 # Calls the action against `libspatialite` (a non-trivial port with several
 # transitive dependencies — proj, geos, sqlite3, libcurl, libxml2, ...) on
-# windows-latest in vcpkg manifest mode (`tests/manifest/vcpkg.json`). The
-# first run cold-builds and populates the GitHub Packages NuGet feed under
-# this repo's owner; subsequent runs verify per-port cache hits.
+# windows-latest using `tests/manifest/vcpkg.json`. The first run cold-builds
+# and populates the GitHub Packages NuGet feed under this repo's owner;
+# subsequent runs verify per-port cache hits.
+#
+# A second job invokes tools/Setup-VcpkgCache.ps1 directly (without going
+# through the composite action) to make sure the local-developer code path
+# stays exercised — same script, same expected behavior.
 #
 # Trigger model:
 #   - workflow_dispatch: ad-hoc smoke / cache refresh
-#   - push to main: regression check after action.yml changes
+#   - push to main: regression check after action.yml or script changes
 #   - pull_request: build-only verification (no NuGet publish — fork PRs
 #     don't get packages:write on GITHUB_TOKEN; we run with mode: read here
 #     to avoid 401s)
@@ -21,23 +25,20 @@ on:
     branches: [main]
     paths:
       - 'action.yml'
+      - 'tools/Setup-VcpkgCache.ps1'
       - 'tests/manifest/vcpkg.json'
       - '.github/workflows/self-test.yml'
   pull_request:
     branches: [main]
     paths:
       - 'action.yml'
+      - 'tools/Setup-VcpkgCache.ps1'
       - 'tests/manifest/vcpkg.json'
       - '.github/workflows/self-test.yml'
 
 concurrency:
   group: self-test-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  # Same SHA as tests/manifest/vcpkg.json's builtin-baseline so the tool
-  # and the resolved port versions stay in sync.
-  VCPKG_PIN: 84bab45d415d22042bd0b9081aea57f362da3f35
 
 jobs:
   windows-publish:
@@ -53,7 +54,7 @@ jobs:
         uses: ./
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          vcpkg-commit: ${{ env.VCPKG_PIN }}
+          manifest-path: tests/manifest/vcpkg.json
       - name: vcpkg install (manifest mode)
         working-directory: tests/manifest
         shell: pwsh
@@ -69,13 +70,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run setup-vcpkg-nuget-cache (consumer mode)
+        id: cache
         uses: ./
         with:
           mode: read
           token: ${{ secrets.GITHUB_TOKEN }}
-          vcpkg-commit: ${{ env.VCPKG_PIN }}
-      - name: Verify env was exported and vcpkg pin took effect
+          manifest-path: tests/manifest/vcpkg.json
+      - name: Verify env exported and vcpkg pinned to action's resolved SHA
         shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ steps.cache.outputs.vcpkg-commit }}
         run: |
           if (-not $env:VCPKG_BINARY_SOURCES) {
             Write-Error "VCPKG_BINARY_SOURCES was not exported"
@@ -83,13 +87,56 @@ jobs:
           }
           Write-Host "VCPKG_BINARY_SOURCES = $env:VCPKG_BINARY_SOURCES"
 
-          $head = (git -C "$env:VCPKG_ROOT" rev-parse HEAD).Trim()
-          if ($head -ne $env:VCPKG_PIN) {
-            Write-Error "vcpkg HEAD = $head, expected $env:VCPKG_PIN"
+          $actual = (git -C "$env:VCPKG_ROOT" rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) {
+            Write-Error "vcpkg HEAD = $actual, expected $env:EXPECTED_SHA (action's vcpkg-commit output)"
             exit 1
           }
-          Write-Host "vcpkg pinned to $head"
+          Write-Host "vcpkg pinned to $actual"
       - name: vcpkg install (manifest mode, read-only)
         working-directory: tests/manifest
         shell: pwsh
         run: vcpkg install --triplet=x64-windows-static-md
+
+  # Smoke test the local-developer code path: invoke the PowerShell
+  # script directly, without the composite-action wrapper, and confirm
+  # it leaves the same env state behind. Skipped on PRs — the
+  # consumer-mode wrapper job above already exercises the same script
+  # via the action, and PR runner minutes are the budget-sensitive path.
+  local-script:
+    if: github.event_name != 'pull_request'
+    name: local-script smoke test
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Invoke Setup-VcpkgCache.ps1 directly
+        id: direct
+        shell: pwsh
+        run: |
+          ./tools/Setup-VcpkgCache.ps1 `
+              -Token '${{ secrets.GITHUB_TOKEN }}' `
+              -Mode read `
+              -ManifestPath tests/manifest/vcpkg.json `
+              -Owner '${{ github.repository_owner }}'
+      - name: Confirm env exported and vcpkg pinned to expected SHA
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ steps.direct.outputs.vcpkg-commit }}
+        run: |
+          if (-not $env:VCPKG_BINARY_SOURCES) {
+            Write-Error "VCPKG_BINARY_SOURCES was not exported"
+            exit 1
+          }
+          if (-not $env:VCPKG_ROOT) {
+            Write-Error "VCPKG_ROOT was not exported"
+            exit 1
+          }
+          $actual = (git -C "$env:VCPKG_ROOT" rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) {
+            Write-Error "vcpkg HEAD = $actual, expected $env:EXPECTED_SHA (script's vcpkg-commit output)"
+            exit 1
+          }
+          Write-Host "Local-script path OK. vcpkg pinned to $actual"
